@@ -180,14 +180,21 @@ if __name__ == "__main__":
         hdu = pyfits.open(arcfile)
         grating = hdu[0].header['GRATING']
         grtilt = hdu[0].header['GRTILT']
+        ccdsum = "x".join(hdu[1].header['CCDSUM'].split())
+        naxis2 = hdu[1].header['NAXIS2']
         mjdobs = 0.0 #hdu[0].header['MJD-OBS']
 
         arc_mjd[bn] = mjdobs
         if (not grating in arc_specs):
             arc_specs[grating] = {}
         if (not grtilt in arc_specs[grating]):
-            arc_specs[grating][grtilt] = []
-        arc_specs[grating][grtilt].append(bn)
+            arc_specs[grating][grtilt] = {}
+        if (not ccdsum in arc_specs[grating][grtilt]):
+            arc_specs[grating][grtilt][ccdsum] = {}
+        if (not naxis2 in arc_specs[grating][grtilt][ccdsum]):
+            arc_specs[grating][grtilt][ccdsum][naxis2] = []
+            
+        arc_specs[grating][grtilt][ccdsum][naxis2].append(bn)
 
         if (os.path.isfile(trans_arc) and not args.redo):
             continue
@@ -244,6 +251,16 @@ if __name__ == "__main__":
 
         print "\n\nWorking on %s\n\n" % (bn)
 
+        # Find the correct flat-field to be used
+        obj_hdu = pyfits.open(obj_file)
+        grating = obj_hdu[0].header['GRATING']
+        grtilt = obj_hdu[0].header['GRTILT']
+        ccdsum = "x".join(obj_hdu[1].header['CCDSUM'].split())
+        naxis2 = obj_hdu[1].header['NAXIS2']
+        ff_name = "masterflat__%s__%.4f__%s__%04d.fits" % (
+            grating, grtilt, ccdsum, naxis2)
+        
+
         #
         # Reduce the spectrum (apply bias, flat, etc)
         #
@@ -251,14 +268,6 @@ if __name__ == "__main__":
             clobberfile(reduced)
 
 
-            # Find the correct flat-field to be used
-            obj_hdu = pyfits.open(obj_file)
-            grating = obj_hdu[0].header['GRATING']
-            grtilt = obj_hdu[0].header['GRTILT']
-            ccdsum = "x".join(obj_hdu[1].header['CCDSUM'].split())
-            naxis2 = obj_hdu[1].header['NAXIS2']
-            ff_name = "masterflat__%s__%.4f__%s__%04d.fits" % (
-                        grating, grtilt, ccdsum, naxis2)
             
             print "Using %s for %s" % (ff_name, obj_file)
             print grating, grtilt, ccdsum, naxis2
@@ -275,7 +284,7 @@ if __name__ == "__main__":
                 fl_over=False, # Subtract overscan level (done via BIAS)
                 fl_fixpix=False, # Interpolate across chip gaps if mosaicing
                 #
-                fl_gscr=True, # Clean images for cosmic rays
+                fl_gscr=False, #True, # Clean images for cosmic rays
                 fl_gmos=True, # Mosaic science extensions
                 fl_vard=True, # Create variance and data quality frames
                 )
@@ -292,19 +301,26 @@ if __name__ == "__main__":
             # from all arc spectra, find the one closest in time with the
             # right combination of grating and grating angle
             #
-            hdu = pyfits.open(obj_file)
-            grating = hdu[0].header['GRATING']
-            grtilt = hdu[0].header['GRTILT']
+            #hdu = pyfits.open(obj_file)
+            #grating = hdu[0].header['GRATING']
+            #grtilt = hdu[0].header['GRTILT']
             mjdobs = 0.0 #hdu[0].header['MJD-OBS']
 
+            
             if (not grating in arc_specs):
                 print "No ARC found for this grating: %s" % (grating)
                 continue
-            if (not grtilt in arc_specs[grating]):
+            elif (not grtilt in arc_specs[grating]):
                 print "No ARC found for this grating angle: %.2f" % (grtilt)
                 continue
+            elif (not ccdsum in arc_specs[grating][grtilt]):
+                print "No ARC found for this binning: %s" % (ccdsum)
+                continue
+            elif (not naxis2 in arc_specs[grating][grtilt][ccdsum]):
+                print "No ARC found for this y-dimension: %s" % (naxis2)
+                continue
 
-            good_arcs = arc_specs[grating][grtilt]
+            good_arcs = arc_specs[grating][grtilt][ccdsum][naxis2]
 
             # Now find the one closest in MJD to the observation
             best_arc = good_arcs[0]
