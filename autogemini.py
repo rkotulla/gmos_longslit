@@ -267,12 +267,13 @@ if __name__ == "__main__":
         if (not os.path.isfile(reduced) or args.redo):
             clobberfile(reduced)
 
-
-            
-            print "Using %s for %s" % (ff_name, obj_file)
-            print grating, grtilt, ccdsum, naxis2
-            #continue
+            # print "Using %s for %s" % (ff_name, obj_file)
+            # print grating, grtilt, ccdsum, naxis2
         
+            # Don't fix cosmics in STD exposures as this seems to 
+            # screw things up
+            crj_fix = obj_file in object_list
+
             iraf.gemini.gmos.gsreduce(
                 inimages=obj_file,
                 outimages=reduced,
@@ -284,7 +285,7 @@ if __name__ == "__main__":
                 fl_over=False, # Subtract overscan level (done via BIAS)
                 fl_fixpix=False, # Interpolate across chip gaps if mosaicing
                 #
-                fl_gscr=False, #True, # Clean images for cosmic rays
+                fl_gscr=crj_fix, #True, # Clean images for cosmic rays
                 fl_gmos=True, # Mosaic science extensions
                 fl_vard=True, # Create variance and data quality frames
                 )
@@ -374,5 +375,116 @@ if __name__ == "__main__":
     # Now all frames are sky-subtracted, let's work on the standard star to 
     # find the flux-calibration
     #
-    for std in std_list:
-        print std
+    for std_file in std_list:
+        print std_file
+
+        _, bn = os.path.split(std_file)
+
+        reduced = bn[:-5]+".red.fits"
+        trans = bn[:-5]+".trans.fits"
+        skysub = bn[:-5]+".skysub.fits"
+
+        spec1d = bn[:-5]+".1d.fits"
+        fluxfile = bn[:-5]+".flux.fits"
+        sensfile = bn[:-5]+".sens.fits"
+
+        std_hdu = pyfits.open(std_file)
+        starname = std_hdu[0].header['OBJECT']
+
+        if (not os.path.isfile(spec1d) or args.redo):
+            clobberfile(spec1d)
+            clobberfile(fluxfile)
+            clobberfile(sensfile)
+
+            #
+            # Extract the spectrum
+            #
+            iraf.gemini.gmos.gsextract(
+                inimages=skysub,
+                outimages=spec1d,
+                apwidth=1.0,                    # 1 arcsec
+                fl_inter=False,                 # Run interactively?
+                find=True,                      # Define apertures automatically?
+                recenter=True,                  # Recenter apertures?
+                trace=True,                     # Trace apertures?
+                tfunction = "chebyshev",        # Trace fitting function
+                torder = 5,                     # Trace fitting function order
+                tnsum = 20,                     # Number of dispersion lines to sum for trace
+                tstep = 50,                     # Tracing step
+                weights = "none",               # Extraction weights (none|variance)
+                clean = False,                  # Detect and replace bad pixels?
+                lsigma = 3.,                    # Lower rejection threshold for cleaning
+                usigma = 3.,                    # Upper rejection threshold for cleaning
+            )
+
+            #
+            # Extablish the sensitivity function
+            #
+            iraf.gemini.gmos.gsstandard(
+                input = spec1d,
+                sfile = "std",                  # Output flux file (used by SENSFUNC)
+                sfunction = "sens",             # Output root sensitivity function image name
+                sci_ext = "SCI",                # Name or number of science extension
+                var_ext = "VAR",                # Name or number of variance extension
+                dq_ext = "DQ",                  # Name or number of data quality extension
+                key_airmass = "AIRMASS",        # Header keyword for airmass
+                key_exptime = "EXPTIME",        # Header keyword for exposure time
+                fl_inter = False,               # Run the task interactively
+                starname = starname,            # Standard star name(s) in calibration list
+                samestar = True,                # Same star in all apertures
+                apertures = "",                 # Aperture selection list
+                beamswitch = False,             # Beam switch spectra
+                bandwidth = 'INDEF',            # Bandpass width
+                bandsep = 'INDEF',              # Bandpass separation
+                fnuzero = 3.6800000000000E-20,  # Absolute flux zero point
+                caldir = "onedstds$spec50cal/", # Directory containing calibration data
+                observatory = "Gemini-North",   # Observatory
+                mag = "",                       # Magnitude of stars
+                magband = "",                   # Magnitude types/bands (U|B|V|R|I|J|H|K|L|Lprime
+                teff = "",                      # Effective temperature of spectral types
+                ignoreaps = True,               # Ignore apertures and make one sensitivity funct
+                extinction = "",                # Extinction file
+                out_extincti = "extinct.dat",   # Output revised extinction file
+                function = "spline3",           # Fitting function
+            )
+
+
+    #
+    # Now apply flux-calibration to all object frames
+    # 
+    for obj_file in object_list+std_list:
+
+        #
+        # Apply flux-calibration to spectra
+        # 
+        # Note: We use a flux-calibration factor of 1e15, so all resulting
+        #       fluxes are in units of 1e-15 erg/s/A/cm^2
+        #
+
+        _, bn = os.path.split(obj_file)
+        skysub = bn[:-5]+".skysub.fits"
+        fluxcal = bn[:-5]+".fluxcal.fits"
+
+        if (not os.path.isfile(fluxcal) or args.redo):
+            clobberfile(fluxcal)
+
+            iraf.gemini.gmos.gscalibrate(
+                input = skysub,               # Input spectra to calibrate
+                output = fluxcal,             # Output calibrated spectra
+                sfunction = "sens",           # Input image root name for sensitivity function
+                sci_ext = "SCI",              # Name of science extension
+                var_ext = "VAR",              # Name of variance extension
+                dq_ext = "DQ",                # Name of data quality extension
+                key_airmass = "AIRMASS",      # Airmass header keyword
+                key_exptime = "EXPTIME",      # Exposure time header keyword
+                fl_vardq = False,              # Propagate VAR/DQ planes
+                fl_ext = False,               # Apply extinction correction to input spectra
+                fl_flux = True,               # Apply flux calibration to input spectra
+                fl_scale = True,              # Multiply output with fluxscale
+                fluxscale = 1e15,             # Value of the flux scale (fl_scale=yes)
+                ignoreaps = True,             # Ignore aperture numbers in flux calibration
+                fl_fnu = False,               # Create spectra having units of FNU
+                extinction = "",              # Extinction file
+                observatory = "Gemini-North", # Observatory
+                verbose = True,               # Verbose?
+                )
