@@ -8,7 +8,7 @@ import argparse
 import pyraf
 from pyraf import iraf
 
-
+import skysubtract
 
 def clobberfile(fn):
     if (os.path.isfile(fn)):
@@ -360,13 +360,18 @@ if __name__ == "__main__":
                 with open(skyfile, "w") as sf:
                     print >>sf, sky_string
 
-            if (not sky_string == None):
-                iraf.gemini.gmos.gsskysub(
-                    input=trans,
-                    fl_answer=False,
-                    output=skysub,
-                    fl_inter=False,
-                    long_sample=sky_string,
+            if (args.myskysub):
+                skysubtract.subsky(
+                    fitsfile=trans, 
+                    outputfile=skysub)
+            else:
+                if (not sky_string == None):
+                    iraf.gemini.gmos.gsskysub(
+                        input=trans,
+                        fl_answer=False,
+                        output=skysub,
+                        fl_inter=False,
+                        long_sample=sky_string,
                     )
 
                 
