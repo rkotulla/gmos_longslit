@@ -46,9 +46,21 @@ if __name__ == "__main__":
                         spec1d.reshape((-1,1)), axis=1)
     print comb.shape
 
+    # output as text file
     outfile = fitsfile[:-5]+".spec"
     with open(outfile, "w") as of:
         numpy.savetxt(of, comb)
         print >>of, "\n\n\n\n\n"
+
+    #
+    # also write as 1-d fits file
+    #
+    primhdu = pyfits.PrimaryHDU(
+        data = spec1d,
+        )
+    primhdu.header['CD1_1'] = wl[1]-wl[0]
+    primhdu.header['CRPIX1'] = 1.
+    primhdu.header['CRVAL1'] = wl[0]
+    primhdu.writeto(fitsfile[:-5]+".1d.fits", clobber=True)
 
     
