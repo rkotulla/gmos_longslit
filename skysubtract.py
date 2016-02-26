@@ -5,7 +5,7 @@ import os, sys, numpy, pyfits, scipy
 import scipy, scipy.ndimage
 
 
-def subsky(fitsfile):
+def subsky(fitsfile, outputfile):
 
     hdu = pyfits.open(fitsfile)
 
@@ -45,14 +45,15 @@ def subsky(fitsfile):
 
     hdu['SCI'].data = skysub
 
-
-    hdu.writeto(fitsfile[:-5]+".skysub2.fits", clobber=True)
+    # fitsfile[:-5]+".skysub2.fits"
+    hdu.writeto(outputfile, clobber=True)
 
 
 if __name__ == "__main__":
 
     for fitsfile in sys.argv[1:]:
-        subsky(fitsfile)
+        output = fitsfile[:-5]+".skysub2.fits"
+        subsky(fitsfile, output)
 
 
 
