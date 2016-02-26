@@ -2,6 +2,7 @@
 
 import os, sys
 import pyfits
+import math
 
 import argparse
 
@@ -13,6 +14,8 @@ import skysubtract
 def clobberfile(fn):
     if (os.path.isfile(fn)):
         os.remove(fn)
+
+import datetime
 
 if __name__ == "__main__":
     
@@ -46,15 +49,22 @@ if __name__ == "__main__":
     object_list = []
     std_list = []
 
+    timestamps = {}
+
     for filename in filelist:
 
         #print filename
         #print
+        _, bn = os.path.split(filename)
 
         hdu = pyfits.open(filename)
         obstype = hdu[0].header["OBSTYPE"]
         target = hdu[0].header['OBJECT'] if 'OBJECT' in hdu[0].header else "???"
 
+        date_time = ("%sT%s" % (hdu[0].header['DATE'], hdu[0].header['UT']))[:19]
+        ts = (datetime.datetime.strptime(date_time, "%Y-%m-%dT%H:%M:%S") - datetime.datetime.min).total_seconds()
+        timestamps[bn] = ts
+        
         #print filename, obstype
 
         if (obstype == "BIAS"):
@@ -295,7 +305,7 @@ if __name__ == "__main__":
         # Rectify the reduced spectrum
         #
 
-        if (not os.path.isfile(trans) or args.redo):
+        if (not os.path.isfile(trans) or args.redo or True):
             clobberfile(trans)
 
             #
@@ -307,24 +317,39 @@ if __name__ == "__main__":
             #grtilt = hdu[0].header['GRTILT']
             mjdobs = 0.0 #hdu[0].header['MJD-OBS']
 
-            
+            print "ARCSEL   Working on %s" % (obj_file)
             if (not grating in arc_specs):
-                print "No ARC found for this grating: %s" % (grating)
+                print "ARCSEL   No ARC found for this grating: %s" % (grating)
                 continue
             elif (not grtilt in arc_specs[grating]):
                 print "No ARC found for this grating angle: %.2f" % (grtilt)
                 continue
             elif (not ccdsum in arc_specs[grating][grtilt]):
-                print "No ARC found for this binning: %s" % (ccdsum)
+                print "ARCSEL   No ARC found for this binning: %s" % (ccdsum)
                 continue
             elif (not naxis2 in arc_specs[grating][grtilt][ccdsum]):
-                print "No ARC found for this y-dimension: %s" % (naxis2)
+                print "ARCSEL   No ARC found for this y-dimension: %s" % (naxis2)
                 continue
 
-            good_arcs = arc_specs[grating][grtilt][ccdsum][naxis2]
+            good_arcs = []
+            for ccdsum in arc_specs[grating][grtilt]:
+                for naxis2 in arc_specs[grating][grtilt][ccdsum]:
+                    good_arcs.extend(arc_specs[grating][grtilt][ccdsum][naxis2])
+            #good_arcs = arc_specs[grating][grtilt][ccdsum][naxis2]
+            print "ARCSEL   Found these arcs for frame %s:\nARCSEL   -- %s" % (
+                obj_file,
+                "\nARCSEL   -- ".join(good_arcs))
 
             # Now find the one closest in MJD to the observation
-            best_arc = good_arcs[0]
+            min_delta_t = 1e99
+            for arc in good_arcs:
+                dt = math.fabs(timestamps[bn] - timestamps[arc])
+                if (dt < min_delta_t):
+                    min_delta_t = dt
+                    best_arc = arc
+            print "ARCSEL   +++>> %s" % (best_arc)
+
+            #best_arc = good_arcs[0]
             arc_db_name = "arc__"+(best_arc[:-5] if best_arc.endswith(".fits") else best_arc)
 
             iraf.gemini.gmos.gstransform(
