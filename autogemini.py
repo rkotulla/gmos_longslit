@@ -17,6 +17,41 @@ def clobberfile(fn):
 
 import datetime
 
+def load_fits_header_edit(fn):
+
+    header_edit = {}
+
+    with open(fn, "r") as fhe:
+        lines = fhe.readlines()
+        for line in lines:
+            items = line.split()
+            
+            fn = items[0]
+            fitskey = items[1]
+            # value = items[2]
+
+            try:
+                value = float(items[2])
+            except:
+                value = items[2]
+
+            _, filebase = os.path.split(fn)
+           
+            if (not filebase in header_edit):
+                header_edit[filebase] = []
+            header_edit[filebase].append((fitskey, value))
+            
+    return header_edit
+
+def apply_fits_header_edit(fn, hdulist, fhe):
+
+    _, base = os.path.split(fn)
+    if (base in fhe):
+        for ext in hdulist:
+            for (key, value) in fhe[base]:
+                if (key in ext.header):
+                    ext.header[key] = value
+
 if __name__ == "__main__":
     
     #
@@ -27,13 +62,38 @@ if __name__ == "__main__":
     parser.add_argument('--myskysub', dest='myskysub', action='store_true',
                         default=False,
                         help='Use the custom sky-subtraction method')
-    parser.add_argument('--redo', dest='redo', action='store_true',
-                        default=False,
+    # parser.add_argument('--redo', dest='redo', action='store_true',
+    #                     default=False,
+    #                     help='Recreate and overwrite files that already exist')
+
+    parser.add_argument('--redo', dest='redo', action='store',
+                        default='',
                         help='Recreate and overwrite files that already exist')
+
+    parser.add_argument('--fitsedit', dest='fitsedit',
+                        action='store', default='',
+                        help='filename with FITS headers to edit on-the-fly')
+    parser.add_argument('--noarcs', dest='noarcs',
+                        action='store_true', default=False,
+                        help='skip processing all ARC frames & re-use existing database')
     parser.add_argument('files', nargs='+', metavar='files',
                         help='raw files to be processed')
 
     args = parser.parse_args()
+
+    fits_header_edit = {}
+    if (os.path.isfile(args.fitsedit)):
+        fits_header_edit = load_fits_header_edit(args.fitsedit)
+        
+    print fits_header_edit
+
+    redo = None
+    if (args.redo != ''):
+        redo = [s.upper() for s in args.redo.split(",")]
+
+    command_list = open("commands.cl", "w")
+
+    # os._exit(0)
 
     #print "redo:", args.redo
 
@@ -50,6 +110,7 @@ if __name__ == "__main__":
     std_list = []
 
     timestamps = {}
+    arc_specs_info = {}
 
     for filename in filelist:
 
@@ -58,6 +119,8 @@ if __name__ == "__main__":
         _, bn = os.path.split(filename)
 
         hdu = pyfits.open(filename)
+        apply_fits_header_edit(filename, hdu, fits_header_edit)
+
         obstype = hdu[0].header["OBSTYPE"]
         target = hdu[0].header['OBJECT'] if 'OBJECT' in hdu[0].header else "???"
 
@@ -90,8 +153,17 @@ if __name__ == "__main__":
             print "%s: Found FLAT" % (filename)
 
         elif (obstype == "ARC"):
+
             arc_list.append(filename)
             print "%s: Found ARC" % (filename)
+
+            _arcspec = {'grating': grating,
+                        'grtilt': grtilt,
+                        'ccdsum': ccdsum,
+                        'naxis2': naxis2,
+                        }
+            _, bn = os.path.split(filename)
+            arc_specs_info[bn] = _arcspec
 
         elif (obstype == "OBJECT"):
             obsclass = hdu[0].header['OBSCLASS']
@@ -115,7 +187,9 @@ if __name__ == "__main__":
     sys.stdout.flush()
     from pyraf.iraf import gemini
     from pyraf.iraf import gmos
-    print "done!"
+    sys.stdout.write(" done!\n")
+    sys.stdout.flush()
+    # print "done!"
 
     print flat_list
 
@@ -124,6 +198,8 @@ if __name__ == "__main__":
     #
     # Create all flat-fields for each of the grtilt angles
     #
+    
+    print "Creating flat-fields!"
     for grating in flat_list:
         for grtilt in flat_list[grating]:
             for ccdsum in flat_list[grating][grtilt]:
@@ -134,6 +210,11 @@ if __name__ == "__main__":
                     flat_out = "masterflat__%s__%.4f__%s__%04d.fits" % (
                         grating, grtilt, ccdsum, naxis2)
 
+                    if (os.path.isfile(flat_out) and (not redo == [] or 'FLAT' in redo)):
+                        print("Skipping generation of flat %s" % (flat_out))
+                        continue
+
+                    
                     #
                     # Delete all the intermediate files created by gsflat/gsreduce
                     # Just to be sure we don;t run into trouble, delete them if they 
@@ -148,13 +229,24 @@ if __name__ == "__main__":
                     if (not os.path.isfile(flat_out) or args.redo):
                         print "computing masterflat:", flat_out
                         clobberfile(flat_out)
-                        iraf.gemini.gmos.gsflat(
+                        _stdout = iraf.gemini.gmos.gsflat(
                             inflats=",".join(flats),
                             specflat=flat_out,
                             order=23,
                             bias=master_bias,
                             fl_over=False,
+                            Stdout=1
                             )
+
+                        print >>command_list, """
+                        iraf.gemini.gmos.gsflat(
+                            inflats=%s,
+                            specflat=flat_out,
+                            order=23,
+                            bias=master_bias,
+                            fl_over=False,
+                            )""" % (",".join(flats))
+
 
                     #
                     # Delete all the intermediate files created by gsflat/gsreduce to 
@@ -166,14 +258,14 @@ if __name__ == "__main__":
                             tmpfile = "%s%s" % (prefix, bn)
                             clobberfile(tmpfile)
         
-
+    print ("done with flat-field generation!")
 
     #
     # Now run the actual science frames, ARCs first
     #
     arc_specs = {}
     arc_mjd = {}
-
+    print("Working on ARCs next...")
     for arcfile in arc_list:
         print "ARC:", arcfile
         _, bn = os.path.split(arcfile)
@@ -188,6 +280,8 @@ if __name__ == "__main__":
         # get some basic specs about the arc
         #
         hdu = pyfits.open(arcfile)
+        apply_fits_header_edit(arcfile, hdu, fits_header_edit)
+
         grating = hdu[0].header['GRATING']
         grtilt = hdu[0].header['GRTILT']
         ccdsum = "x".join(hdu[1].header['CCDSUM'].split())
@@ -206,7 +300,9 @@ if __name__ == "__main__":
             
         arc_specs[grating][grtilt][ccdsum][naxis2].append(bn)
 
-        if (os.path.isfile(trans_arc) and not args.redo):
+        if (os.path.isfile(trans_arc) and 
+            (not redo == [] or 'ARC' in redo or args.noarcs)):
+            print "Skipping processing of ARC %s" % (arcfile)
             continue
 
         #
@@ -223,31 +319,50 @@ if __name__ == "__main__":
             fl_fixpix=False
             )
 
+        print >>command_list, """
+        iraf.gemini.gmos.gsreduce(
+            inimages=%s,
+            outimages=%s,
+            outpref="gs",
+            fl_flat=False,
+            bias=%s,
+            fl_over='no',
+            fl_fixpix='yes'
+            )""" % (arcfile, arc_reduced, master_bias)
+
         #
         # Find wavelength solution
         #
         try:
             iraf.gemini.gmos.gswavelength(
                 inimages=arc_reduced,
-                fl_inter=False,  # run non-interactively
+                fl_inter=True,  # run non-interactively
             )
+
         except:
             iraf.gemini.gmos.gswavelength(
                 inimages=arc_reduced,
                 fl_inter='NO',  # run non-interactively
             )
 
+        print >>command_list, """
+            iraf.gemini.gmos.gswavelength(
+                inimages=%s,
+                fl_inter='yes',  # run non-interactively
+            )""" % (arc_reduced)
 
-        #
-        # Transform ARC spectrum just for checking
-        #
-        clobberfile(trans_arc)
-        iraf.gemini.gmos.gstransform(
-            inimages=arc_reduced,
-            wavtran=arc_reduced[:-5],
-            outimages=trans_arc,
-            )
 
+        # #
+        # # Transform ARC spectrum just for checking
+        # #
+        # clobberfile(trans_arc)
+        # iraf.gemini.gmos.gstransform(
+        #     inimages=arc_reduced,
+        #     wavtran=arc_reduced[:-5],
+        #     outimages=trans_arc,
+        #     )
+
+    print arc_specs_info
 
     #
     # Now reduce the actual science spectra
@@ -263,18 +378,20 @@ if __name__ == "__main__":
 
         # Find the correct flat-field to be used
         obj_hdu = pyfits.open(obj_file)
+        apply_fits_header_edit(obj_file, obj_hdu, fits_header_edit)
+
         grating = obj_hdu[0].header['GRATING']
         grtilt = obj_hdu[0].header['GRTILT']
         ccdsum = "x".join(obj_hdu[1].header['CCDSUM'].split())
         naxis2 = obj_hdu[1].header['NAXIS2']
-        ff_name = "masterflat__%s__%.4f__%s__%04d.fits" % (
+        ff_name = "masterflat__%s__%.5f__%s__%04d.fits" % (
             grating, grtilt, ccdsum, naxis2)
         
 
         #
         # Reduce the spectrum (apply bias, flat, etc)
         #
-        if (not os.path.isfile(reduced) or args.redo):
+        if (not os.path.isfile(reduced) or (redo != None and 'OBJ' in redo)):
             clobberfile(reduced)
 
             # print "Using %s for %s" % (ff_name, obj_file)
@@ -284,7 +401,9 @@ if __name__ == "__main__":
             # screw things up
             crj_fix = obj_file in object_list
 
-            iraf.gemini.gmos.gsreduce(
+            print("Reducing %s\n   bias: %s\n   flat: %s" % (obj_file, master_bias, ff_name))
+            # Check if the bias dimensions match the frame dimensions
+            _stdout = iraf.gemini.gmos.gsreduce(
                 inimages=obj_file,
                 outimages=reduced,
                 outpref="gs",
@@ -292,20 +411,22 @@ if __name__ == "__main__":
                 # Apply flat field correction if the right file exists
                 flatim=ff_name,
                 bias=master_bias,
-                fl_over=False, # Subtract overscan level (done via BIAS)
+                fl_over=True, #False, # Subtract overscan level (done via BIAS)
                 fl_fixpix=False, # Interpolate across chip gaps if mosaicing
                 #
                 fl_gscr=crj_fix, #True, # Clean images for cosmic rays
                 fl_gmos=True, # Mosaic science extensions
                 fl_vard=True, # Create variance and data quality frames
+                Stdout=1,
                 )
+            print "\n".join(_stdout)
         
 
         #
         # Rectify the reduced spectrum
         #
 
-        if (not os.path.isfile(trans) or args.redo or True):
+        if (not os.path.isfile(trans) or (redo != None and 'WLCAL' in redo)): #args.redo or True):
             clobberfile(trans)
 
             #
@@ -318,6 +439,8 @@ if __name__ == "__main__":
             mjdobs = 0.0 #hdu[0].header['MJD-OBS']
 
             print "ARCSEL   Working on %s" % (obj_file)
+            print "ARCSEL   grating: %s  //  GRTILT: %8.5f  //  NAXIS: %d  //  BIN: %s" % (
+                grating, grtilt, naxis2, ccdsum)
             if (not grating in arc_specs):
                 print "ARCSEL   No ARC found for this grating: %s" % (grating)
                 continue
@@ -338,7 +461,10 @@ if __name__ == "__main__":
             #good_arcs = arc_specs[grating][grtilt][ccdsum][naxis2]
             print "ARCSEL   Found these arcs for frame %s:\nARCSEL   -- %s" % (
                 obj_file,
-                "\nARCSEL   -- ".join(good_arcs))
+                "\nARCSEL   -- ".join(['%s: %s' % (
+                    fn, "%(grating)s / %(grtilt).4f / %(ccdsum)s / %(naxis2)d" % arc_specs_info[fn]) for fn in good_arcs]),
+#                "\nARCSEL   -- ".join(good_arcs),
+            )
 
             # Now find the one closest in MJD to the observation
             min_delta_t = 1e99
@@ -351,24 +477,29 @@ if __name__ == "__main__":
 
             #best_arc = good_arcs[0]
             arc_db_name = "arc__"+(best_arc[:-5] if best_arc.endswith(".fits") else best_arc)
+            # continue
 
-            iraf.gemini.gmos.gstransform(
+            print("Running GSTransform (%s --> %s)" % (reduced, trans))
+            _stdout = iraf.gemini.gmos.gstransform(
                 inimages=reduced,
                 wavtran=arc_db_name,
                 outimages=trans,
+                Stdout=1
                 )
+            #print _stdout
 
 
         #
         # Apply sky-subtraction
         #
 
-        if (not os.path.isfile(skysub) or args.redo):
+        if (not os.path.isfile(skysub) or (redo != None and 'SKYSUB' in redo)): #args.redo):
             clobberfile(skysub)
             # 594:661,1000:1130
             #
             # Select region to be used as sky
             #
+            print "Subtracting sky background"
             skyfile = "skymask_%s.txt" % (bn[:-5])
             sky_string = None
             if (os.path.isfile(skyfile)):
@@ -405,6 +536,9 @@ if __name__ == "__main__":
     # Now all frames are sky-subtracted, let's work on the standard star to 
     # find the flux-calibration
     #
+    print "list of standard stars:", std_list
+
+
     for std_file in std_list:
         print std_file
 
@@ -421,7 +555,7 @@ if __name__ == "__main__":
         std_hdu = pyfits.open(std_file)
         starname = std_hdu[0].header['OBJECT']
 
-        if (not os.path.isfile(spec1d) or args.redo):
+        if (not os.path.isfile(spec1d) or (redo != None and "STD" in redo)):
             clobberfile(spec1d)
             clobberfile(fluxfile)
             clobberfile(sensfile)
@@ -429,6 +563,7 @@ if __name__ == "__main__":
             #
             # Extract the spectrum
             #
+            print("Extracting 1-d spectrum for standard star")
             iraf.gemini.gmos.gsextract(
                 inimages=skysub,
                 outimages=spec1d,
@@ -448,12 +583,15 @@ if __name__ == "__main__":
             )
 
             #
-            # Extablish the sensitivity function
+            # Establish the sensitivity function
             #
+            print("Establish sensitivity response function")
+            clobberfile("std")
+            clobberfile("sens.fits")
             iraf.gemini.gmos.gsstandard(
                 input = spec1d,
                 sfile = "std",                  # Output flux file (used by SENSFUNC)
-                sfunction = "sens",             # Output root sensitivity function image name
+                sfunction = "sens.fits",             # Output root sensitivity function image name
                 sci_ext = "SCI",                # Name or number of science extension
                 var_ext = "VAR",                # Name or number of variance extension
                 dq_ext = "DQ",                  # Name or number of data quality extension
@@ -478,6 +616,7 @@ if __name__ == "__main__":
                 function = "spline3",           # Fitting function
             )
 
+#    sys.exit(0)
 
     #
     # Now apply flux-calibration to all object frames
@@ -495,10 +634,10 @@ if __name__ == "__main__":
         skysub = bn[:-5]+".skysub.fits"
         fluxcal = bn[:-5]+".fluxcal.fits"
 
-        if (not os.path.isfile(fluxcal) or args.redo):
+        if (not os.path.isfile(fluxcal) or (redo != None and "FLUXCAL" in redo)):
             clobberfile(fluxcal)
 
-            iraf.gemini.gmos.gscalibrate(
+            _stdout=iraf.gemini.gmos.gscalibrate(
                 input = skysub,               # Input spectra to calibrate
                 output = fluxcal,             # Output calibrated spectra
                 sfunction = "sens",           # Input image root name for sensitivity function
@@ -517,4 +656,5 @@ if __name__ == "__main__":
                 extinction = "",              # Extinction file
                 observatory = "Gemini-North", # Observatory
                 verbose = True,               # Verbose?
+                Stdout=1,
                 )
