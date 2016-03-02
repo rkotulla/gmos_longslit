@@ -52,6 +52,23 @@ def apply_fits_header_edit(fn, hdulist, fhe):
                 if (key in ext.header):
                     ext.header[key] = value
 
+
+def check_for_overscan(filename, master_bias):
+
+#    fhdu = pyfits.open(filename)
+    biashdu = pyfits.open(master_bias)
+    
+    # for i in range(1, len(fhdu)):
+    #     try:
+    #         f_nax1 = fhdu[i].header['NAXIS1']
+    #         b_nax1 = biashdu[i].header['NAXIS1']
+    #         if (f_nax1 != b_nax1):
+    #             return True
+    #     except:
+    #         pass
+
+    return "OVERSEC" in biashdu[1].header
+
 if __name__ == "__main__":
     
     #
@@ -308,6 +325,7 @@ if __name__ == "__main__":
         #
         # Reduce ARC spectrum
         #
+        use_overscan = check_for_overscan(arcfile, master_bias)
         clobberfile(arc_reduced)
         iraf.gemini.gmos.gsreduce(
             inimages=arcfile,
@@ -315,7 +333,7 @@ if __name__ == "__main__":
             outpref="gs",
             fl_flat=False,
             bias=master_bias,
-            fl_over=False,
+            fl_over=use_overscan,
             fl_fixpix=False
             )
 
@@ -403,6 +421,8 @@ if __name__ == "__main__":
 
             print("Reducing %s\n   bias: %s\n   flat: %s" % (obj_file, master_bias, ff_name))
             # Check if the bias dimensions match the frame dimensions
+            use_overscan = check_for_overscan(obj_file, master_bias)
+            print "USING OVERSCAN?:", use_overscan
             _stdout = iraf.gemini.gmos.gsreduce(
                 inimages=obj_file,
                 outimages=reduced,
@@ -411,7 +431,7 @@ if __name__ == "__main__":
                 # Apply flat field correction if the right file exists
                 flatim=ff_name,
                 bias=master_bias,
-                fl_over=True, #False, # Subtract overscan level (done via BIAS)
+                fl_over=use_overscan, #False, # Subtract overscan level (done via BIAS)
                 fl_fixpix=False, # Interpolate across chip gaps if mosaicing
                 #
                 fl_gscr=crj_fix, #True, # Clean images for cosmic rays
@@ -426,7 +446,9 @@ if __name__ == "__main__":
         # Rectify the reduced spectrum
         #
 
-        if (not os.path.isfile(trans) or (redo != None and 'WLCAL' in redo)): #args.redo or True):
+        if (os.path.isfile(reduced) and 
+            (not os.path.isfile(trans) or (redo != None and 'WLCAL' in redo))
+        ): 
             clobberfile(trans)
 
             #
@@ -481,9 +503,15 @@ if __name__ == "__main__":
 
             print("Running GSTransform (%s --> %s)" % (reduced, trans))
             _stdout = iraf.gemini.gmos.gstransform(
-                inimages=reduced,
-                wavtran=arc_db_name,
-                outimages=trans,
+                inimages=reduced,          # Input GMOS spectra
+                wavtran=arc_db_name,       # Names of wavelength calibrations
+                outimages=trans,           # Output spectra
+                fl_wavtran = True,         # Apply wavelength calibration from arc spectrum
+                database = "database",     # Directory for calibration files
+                sci_ext = "SCI",           # Name of science extension
+                var_ext = "VAR",           # Name of variance extension
+                dq_ext = "DQ",             # Name of data quality extension
+                fl_vardq = True,           # Transform variance and data quality planes
                 Stdout=1
                 )
             #print _stdout
@@ -493,7 +521,9 @@ if __name__ == "__main__":
         # Apply sky-subtraction
         #
 
-        if (not os.path.isfile(skysub) or (redo != None and 'SKYSUB' in redo)): #args.redo):
+        if (os.path.isfile(trans) and
+            (not os.path.isfile(skysub) or (redo != None and 'SKYSUB' in redo))
+        ):
             clobberfile(skysub)
             # 594:661,1000:1130
             #
@@ -591,7 +621,7 @@ if __name__ == "__main__":
             iraf.gemini.gmos.gsstandard(
                 input = spec1d,
                 sfile = "std",                  # Output flux file (used by SENSFUNC)
-                sfunction = "sens.fits",             # Output root sensitivity function image name
+                sfunction = "sens.fits",        # Output root sensitivity function image name
                 sci_ext = "SCI",                # Name or number of science extension
                 var_ext = "VAR",                # Name or number of variance extension
                 dq_ext = "DQ",                  # Name or number of data quality extension
@@ -634,9 +664,12 @@ if __name__ == "__main__":
         skysub = bn[:-5]+".skysub.fits"
         fluxcal = bn[:-5]+".fluxcal.fits"
 
-        if (not os.path.isfile(fluxcal) or (redo != None and "FLUXCAL" in redo)):
+        if (os.path.isfile(skysub) and
+            (not os.path.isfile(fluxcal) or (redo != None and "FLUXCAL" in redo))
+        ):
             clobberfile(fluxcal)
 
+            print("Applying flux calibration to %s" % (skysub))
             _stdout=iraf.gemini.gmos.gscalibrate(
                 input = skysub,               # Input spectra to calibrate
                 output = fluxcal,             # Output calibrated spectra
@@ -646,7 +679,7 @@ if __name__ == "__main__":
                 dq_ext = "DQ",                # Name of data quality extension
                 key_airmass = "AIRMASS",      # Airmass header keyword
                 key_exptime = "EXPTIME",      # Exposure time header keyword
-                fl_vardq = False,              # Propagate VAR/DQ planes
+                fl_vardq = True,              # Propagate VAR/DQ planes
                 fl_ext = False,               # Apply extinction correction to input spectra
                 fl_flux = True,               # Apply flux calibration to input spectra
                 fl_scale = True,              # Multiply output with fluxscale
