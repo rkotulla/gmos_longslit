@@ -10,6 +10,9 @@ if __name__ == "__main__":
     hdu = pyfits.open(fitsfile)
 
     data = hdu['SCI'].data
+    dq = hdu['DQ'].data
+
+    data[dq > 0] = numpy.NaN
 
     cutout = data[ap[0]-1:ap[1], :]
     
